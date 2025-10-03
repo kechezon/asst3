@@ -23,9 +23,9 @@
     wr_checker Checker(wires, occupancy);
    and call its validate() method from your code.
  The struct below is the standard format for wires used by the wire checker.
- It contains a buffer that holds up to four points, and a num_pts field 
+ It contains a buffer that holds up to four points, and a num_pts field
  that specifies the number of points.
- Regardless of what representation you use for your wires, you should 
+ Regardless of what representation you use for your wires, you should
  implement the Wire::to_validate_format method to convert your Wire
  to a validate_wire_t if you wish to use the checker.
 */
@@ -40,7 +40,8 @@ struct validate_wire_t {
 };
 
 struct Wire {
-  /* Define the data structure for wire here. */ 
+  /* Define the data structure for wire here. */
+  /* Note that you can extrapolate bend2 from start, end, and bend1! */
   int start_x, start_y, end_x, end_y, bend1_x, bend1_y;
   validate_wire_t to_validate_format(void) const;
 };
@@ -52,7 +53,7 @@ struct wr_checker {
   const int nwires;
   const int dim_x;
   const int dim_y;
-  wr_checker(std::vector<Wire> &wires, std::vector<std::vector<int>> &occupancies) 
+  wr_checker(std::vector<Wire> &wires, std::vector<std::vector<int>> &occupancies)
   : wires(wires), occupancies(occupancies), nwires(wires.size()), dim_x(occupancies[0].size()), dim_y(occupancies.size()) {}
   void validate() const;
 };

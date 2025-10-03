@@ -12,6 +12,7 @@
 #include <chrono>
 #include <string>
 #include <vector>
+#include <cassert>
 
 #include <unistd.h>
 #include <omp.h>
@@ -168,12 +169,99 @@ int main(int argc, char *argv[]) {
 
   const auto compute_start = std::chrono::steady_clock::now();
 
-  /** 
+  // EXCLUSIVE
+  auto horizontal_line = [&](int x1, int x2, int y, int val) {
+    if (x1 < 0 || x2 > dim_x || x2 < 0 || x2 > dim_x || y < 0 || y > dim_y) {
+      printf("Tried to draw horizontal line out of bounds! (%i->%i, %i)\n", x1, x2, y);
+      abort();
+    }
+
+    if (x1 > x2) {
+      int temp = x1;
+      x1 = x2;
+      x2 = temp;
+    }
+
+    for (int i = x1; i < x2; i++) occupancy[y][i] += val;
+    return;
+  };
+
+  // EXCLUSIVE
+  auto vertical_line = [&](int y1, int y2, int x, int val) {
+    if (y1 < 0 || y2 > dim_y || y2 < 0 || y2 > dim_x || x < 0 || x > dim_x) {
+        printf("Tried to draw horizontal line out of bounds! (%i, %i->%i)\n", x, y1, y2);
+        abort();
+    }
+
+    if (y1 > y2) {
+      int temp = y1;
+      y1 = y2;
+      y2 = temp;
+    }
+
+    for (int i = y1; i < y2; i++) occupancy[i][x] += val;
+    return;
+  };
+
+  /**
    * Implement the wire routing algorithm here
    * Feel free to structure the algorithm into different functions
    * Don't use global variables.
-   * Use OpenMP to parallelize the algorithm. 
+   * Use OpenMP to parallelize the algorithm.
+   * TODO
    */
+  if (parallel_mode == 'W') {
+
+    // First pass:
+    // 1) Add random route for each wire and draw it
+    for (auto& wire : wires) {
+      // TODO: Chose random bend axis and location
+
+      // one horizontal
+      if (wire.start_y == wire.end_y)
+        horizontal_line(wire.start_x, wire.end_x + 1, wire.start_y, 1);
+
+
+      // first line is horizontal
+      else if (wire.start_y == wire.bend1_y) {
+        bool one_bend = wire.bend1_x == wire.end_x;
+
+        horizontal_line(wire.start_x, wire.bend1_x, wire.bend1_y, 1);
+        vertical_line(wire.bend1_y, wire.end_y + (one_bend ? 1 : 0), wire.bend1_x, 1);
+        horizontal_line(wire.bend1_x, wire.end_x, wire.end_y, 1); // if one_bend, then draws nothing
+      }
+
+      // one vertical
+      else if (wire.start_x == wire.end_x)
+        vertical_line(wire.start_y, wire.end_y + 1, wire.start_x, 1);
+
+      // first line is vertical
+      else if (wire.start_x == wire.bend1_x) {
+        bool one_bend = wire.bend1_y == wire.end_y;
+
+        vertical_line(wire.start_y, wire.bend1_y, wire.bend1_x, 1);
+        horizontal_line(wire.bend1_x, wire.end_x + (one_bend ? 1 : 0), wire.bend1_y, 1);
+        vertical_line(wire.bend1_y, wire.end_y, wire.end_x, 1); // if one_bend, then draws nothing
+      }
+    }
+
+    // Second pass onwards:
+    // 2) For each wire:
+    //    a) Compute overall cost in current occupancy matrix
+    //    b) Remove the current route, and compute the
+    //       overall cost without that wire
+    //    c) Fork into threads, where each one takes
+    //       a different route. For each route:
+    //       i)  Travel from start->bend1->bend2->end, calculating how
+    //           much you *would* add to the cost by reading the occupancy matrix
+    //           (if o.m. has value v, then you would add ((v+1)^2 - v^2 = 2v+1)
+    //       ii) Compute new cost.
+    //    d) Join by comparing the costs. If the cheapest route reduces
+    //       the overall cost, add that route to occupancy matrix.
+  }
+  else { assert(parallel_mode == 'A'); // parallel_mode == 'A'
+    // TODO:
+  }
 
   const double compute_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - compute_start).count();
   std::cout << "Computation time (sec): " << compute_time << '\n';
