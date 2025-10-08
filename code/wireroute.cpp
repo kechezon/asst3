@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 #include <cassert>
+#include <cstdlib>
+#include <limits.h>
 
 #include <unistd.h>
 #include <omp.h>
@@ -169,38 +171,131 @@ int main(int argc, char *argv[]) {
 
   const auto compute_start = std::chrono::steady_clock::now();
 
-  // EXCLUSIVE
+  // INCLUSIVE
   auto horizontal_line = [&](int x1, int x2, int y, int val) {
-    if (x1 < 0 || x2 > dim_x || x2 < 0 || x2 > dim_x || y < 0 || y > dim_y) {
+    if (x1 < 0 || x2 >= dim_x || x2 < 0 || x2 >= dim_x || y < 0 || y >= dim_y) {
       printf("Tried to draw horizontal line out of bounds! (%i->%i, %i)\n", x1, x2, y);
       abort();
     }
 
-    if (x1 > x2) {
-      int temp = x1;
-      x1 = x2;
-      x2 = temp;
+    if (x1 <= x2) {
+      for (int i = x1; i <= x2; i++) occupancy[y][i] += val;
+    }
+    else {
+      for (int i = x1; i >= x2; i--) occupancy[y][i] += val;
     }
 
-    for (int i = x1; i < x2; i++) occupancy[y][i] += val;
     return;
   };
 
-  // EXCLUSIVE
+  // INCLUSIVE
   auto vertical_line = [&](int y1, int y2, int x, int val) {
-    if (y1 < 0 || y2 > dim_y || y2 < 0 || y2 > dim_x || x < 0 || x > dim_x) {
+    if (y1 < 0 || y2 >= dim_y || y2 < 0 || y2 >= dim_x || x < 0 || x >= dim_x) {
         printf("Tried to draw horizontal line out of bounds! (%i, %i->%i)\n", x, y1, y2);
         abort();
     }
 
-    if (y1 > y2) {
-      int temp = y1;
-      y1 = y2;
-      y2 = temp;
+    if (y1 <= y2) {
+      for (int i = y1; i <= y2; i++) occupancy[i][x] += val;
+    }
+    else {
+      for (int i = y1; i >= y2; i--) occupancy[i][x] += val;
     }
 
-    for (int i = y1; i < y2; i++) occupancy[i][x] += val;
     return;
+  };
+
+  auto overall_cost = [&]() {
+    int cost = 0;
+    for (const auto& row : occupancy) {
+      for (const int count : row) {
+        cost += count * count;
+      }
+    }
+    return cost;
+  };
+
+  /********************************************************
+   * the cost of adding `wire` to the occupancy matrix
+   * with a potential bend location
+   * (assumes the route is not already present)
+   *
+   * Travel from start->bend1->bend2->end,
+   * calculating how much you *would* add to cost
+   * by reading the occupancy matrix
+   * (if o.m. position has value v, then you would add
+   * ((v+1)^2 - v^2 = 2v+1)
+   ********************************************************/
+  auto route_cost = [&](Wire wire, int bend1_x, int bend1_y) {
+    int cost = 0;
+
+    // first move is horizontal
+    if (wire.start_y == bend1_y) {
+      if (wire.start_x <= bend1_x)
+        for (int i = wire.start_x; i <= bend1_x; i++) {
+          cost += 2*(occupancy[wire.start_y][i]) + 1;
+        }
+      else
+        for (int i = wire.start_x; i >= bend1_x; i--) {
+          cost += 2*(occupancy[wire.start_y][i]) + 1;
+        }
+
+      // First bend
+      if (wire.bend1_y <= wire.end_y)
+        for (int i = bend1_y + 1; i <= wire.end_y; i++) {
+          cost += 2*(occupancy[i][bend1_x]) + 1;
+        }
+      else
+        for (int i = bend1_y - 1; i >= wire.end_y; i--) {
+          cost += 2*(occupancy[i][bend1_x]) + 1;
+        }
+
+      // Second bend
+      if (wire.bend1_x <= wire.end_x)
+        for (int i = bend1_x + 1; i <= wire.end_x; i++) {
+          cost += 2*(occupancy[wire.end_y][i]) + 1;
+        }
+      else
+        for (int i = bend1_x - 1; i >= wire.end_x; i--) {
+          cost += 2*(occupancy[wire.end_y][i]) + 1;
+        }
+
+      return cost;
+    }
+
+    // first move is vertical
+    else {
+      if (wire.start_y <= bend1_y)
+        for (int i = wire.start_y; i <= bend1_y; i++) {
+          cost += 2*(occupancy[i][wire.start_x]) + 1;
+        }
+      else
+        for (int i = wire.start_y; i >= bend1_y; i--) {
+          cost += 2*(occupancy[i][wire.start_x]) + 1;
+        }
+
+      // First bend
+      if (bend1_x <= wire.end_x)
+        for (int i = bend1_x + 1; i <= wire.end_x; i++) {
+          cost += 2*(occupancy[bend1_y][i]) + 1;
+        }
+      else
+        for (int i = bend1_x - 1; i >= wire.end_x; i--) {
+          cost += 2*(occupancy[bend1_y][i]) + 1;
+        }
+
+      // Second bend
+      if (wire.bend1_y <= wire.end_y)
+        for (int i = bend1_y + 1; i <= wire.end_y; i++) {
+          cost += 2*(occupancy[i][wire.end_x]) + 1;
+        }
+      else
+        for (int i = bend1_y - 1; i >= wire.end_y; i--) {
+          cost += 2*(occupancy[i][wire.end_x]) + 1;
+        }
+
+      return cost;
+    }
   };
 
   /**
@@ -214,53 +309,133 @@ int main(int argc, char *argv[]) {
 
     // First pass:
     // 1) Add random route for each wire and draw it
-    for (auto& wire : wires) {
-      // TODO: Chose random bend axis and location
+    for (auto& wire : wires) { // TODO: OpenMP this to fork based on wire
+      // Chose random bend axis and location
+      if (rand() % 2 == 1) { // horizontal first
+        wire.bend1_y = wire.start_y;
+        wire.bend1_x = wire.start_x + (rand() % (abs(wire.end_x - wire.start_x) + 1));
 
-      // one horizontal
-      if (wire.start_y == wire.end_y)
-        horizontal_line(wire.start_x, wire.end_x + 1, wire.start_y, 1);
-
-
-      // first line is horizontal
-      else if (wire.start_y == wire.bend1_y) {
-        bool one_bend = wire.bend1_x == wire.end_x;
-
-        horizontal_line(wire.start_x, wire.bend1_x, wire.bend1_y, 1);
-        vertical_line(wire.bend1_y, wire.end_y + (one_bend ? 1 : 0), wire.bend1_x, 1);
-        horizontal_line(wire.bend1_x, wire.end_x, wire.end_y, 1); // if one_bend, then draws nothing
+        horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, 1);
+        vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
+        horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, 1);
       }
+      else { // vertical first
+        wire.bend1_x = wire.start_x;
+        wire.bend1_y = wire.start_y + (rand() % (abs(wire.end_y - wire.start_y) + 1));
 
-      // one vertical
-      else if (wire.start_x == wire.end_x)
-        vertical_line(wire.start_y, wire.end_y + 1, wire.start_x, 1);
-
-      // first line is vertical
-      else if (wire.start_x == wire.bend1_x) {
-        bool one_bend = wire.bend1_y == wire.end_y;
-
-        vertical_line(wire.start_y, wire.bend1_y, wire.bend1_x, 1);
-        horizontal_line(wire.bend1_x, wire.end_x + (one_bend ? 1 : 0), wire.bend1_y, 1);
-        vertical_line(wire.bend1_y, wire.end_y, wire.end_x, 1); // if one_bend, then draws nothing
+        vertical_line(wire.start_y, wire.bend1_y, wire.start_x, 1);
+        horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, 1);
+        vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
       }
     }
+    // TODO: OpenMP Join
 
-    // Second pass onwards:
-    // 2) For each wire:
-    //    a) Compute overall cost in current occupancy matrix
-    //    b) Remove the current route, and compute the
-    //       overall cost without that wire
-    //    c) Fork into threads, where each one takes
-    //       a different route. For each route:
-    //       i)  Travel from start->bend1->bend2->end, calculating how
-    //           much you *would* add to the cost by reading the occupancy matrix
-    //           (if o.m. has value v, then you would add ((v+1)^2 - v^2 = 2v+1)
-    //       ii) Compute new cost.
-    //    d) Join by comparing the costs. If the cheapest route reduces
-    //       the overall cost, add that route to occupancy matrix.
+
+    // 2) Second pass onwards:
+    for (int iter = 0; iter < SA_iters; iter++) {
+
+      // For each wire:
+      for (auto &wire : wires) {
+        int min_path_bend1_x = 0;
+        int min_path_bend1_y = 0;
+        // a) Compute overall cost in current occupancy matrix
+        //    with and without wire
+        int cost_with = overall_cost();
+
+        // Remove the line:
+        if (wire.start_y == wire.bend1_y) { // horizontal first
+          horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, -1);
+          vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, -1);
+          horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, -1);
+
+        }
+        else { // vertical first
+          vertical_line(wire.start_y, wire.bend1_y, wire.start_x, -1);
+          horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, -1);
+          vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, -1);
+        }
+        int cost_without = overall_cost();
+
+        int min_cost = INT_MAX;
+
+        // OpenMP "Fork" to schedule
+        // dx + dy threadto calculate minimum path
+        int dx = wire.end_x - wire.start_x;
+        int dy = wire.end_y - wire.start_y;
+
+        omp_lock_t *cost_lock;
+        omp_init_lock(cost_lock);
+        #pragma omp parallel num_threads(abs(dx)+abs(dy))
+        {
+          unsigned int thread_idx = omp_get_thread_num();
+          int my_cost = 0;
+          int bend1_x = wire.start_x;
+          int bend1_y = wire.start_y;
+          // b) Determine minimum horizontal-first path
+          if (thread_idx < abs(dx)) { // Determine minimum horizontal-first path
+            int shift = thread_idx + 1;
+            int dir = dx >= 0 ? 1 : -1;
+            bend1_x += shift * dir;
+
+            my_cost = route_cost(wire, bend1_x, wire.start_y);
+          }
+          else { // c) Determine minimum vertical-first path
+            int shift = thread_idx - abs(dx) + 1;
+            int dir = dy >= 0 ? 1 : -1;
+            bend1_y += shift * dir;
+
+            my_cost = route_cost(wire, wire.start_x, bend1_y);
+          }
+
+          omp_set_lock(cost_lock);
+          if (my_cost < min_cost) {
+              min_cost = my_cost;
+              wire.bend1_x = bend1_x;
+              wire.bend1_y = bend1_y;
+          }
+          omp_unset_lock(cost_lock);
+        }
+        // OpenMP "Join"
+
+        // d) With probability (1-P) (or straight line is min), choose minimum path.
+        //    Otherwise, choose path randomly.
+        if ((rand() / (float)(RAND_MAX)) <= 1 - SA_prob) {
+          // Add to occupancy matrix
+          if (wire.start_y == wire.bend1_y) { // horizontal first
+            horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, 1);
+            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
+            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, 1);
+          }
+          else { // vertical first
+            vertical_line(wire.start_y, wire.bend1_y, wire.start_x, 1);
+            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, 1);
+            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
+          }
+        }
+        else {
+          // TODO: Random Path
+          if (rand() % 2 == 1) { // horizontal first
+            wire.bend1_y = wire.start_y;
+            wire.bend1_x = wire.start_x + (rand() % (abs(wire.end_x - wire.start_x) + 1));
+
+            horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, 1);
+            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
+            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, 1);
+          }
+          else { // vertical first
+            wire.bend1_x = wire.start_x;
+            wire.bend1_y = wire.start_y + (rand() % (abs(wire.end_y - wire.start_y) + 1));
+
+            vertical_line(wire.start_y, wire.bend1_y, wire.start_x, 1);
+            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, 1);
+            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
+          }
+        }
+      }
+    }
   }
   else { assert(parallel_mode == 'A'); // parallel_mode == 'A'
-    // TODO:
+    // TODO: What can be done independently betwen wires?
   }
 
   const double compute_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - compute_start).count();
