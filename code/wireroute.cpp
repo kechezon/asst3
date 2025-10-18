@@ -166,15 +166,10 @@ int main(int argc, char *argv[]) {
 
   /* Initialize any additional data structures needed in the algorithm */
 
-  const double init_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - init_start).count();
-  std::cout << "Initialization time (sec): " << std::fixed << std::setprecision(10) << init_time << '\n';
-
-  const auto compute_start = std::chrono::steady_clock::now();
-
   // INCLUSIVE
   auto horizontal_line = [&](int x1, int x2, int y, int val) {
     if (x1 < 0 || x2 >= dim_x || x2 < 0 || x2 >= dim_x || y < 0 || y >= dim_y) {
-      printf("Tried to draw horizontal line out of bounds! (%i->%i, %i)\n", x1, x2, y);
+      printf("Tried to draw horizontal line out of bounds! (%i->%i, %i) in (%i, %i)\n", x1, x2, y, dim_x, dim_y);
       abort();
     }
 
@@ -191,7 +186,7 @@ int main(int argc, char *argv[]) {
   // INCLUSIVE
   auto vertical_line = [&](int y1, int y2, int x, int val) {
     if (y1 < 0 || y2 >= dim_y || y2 < 0 || y2 >= dim_x || x < 0 || x >= dim_x) {
-        printf("Tried to draw horizontal line out of bounds! (%i, %i->%i)\n", x, y1, y2);
+        printf("Tried to draw vertical line out of bounds! (%i, %i->%i) in (%i, %i)\n", x, y1, y2, dim_x, dim_y);
         abort();
     }
 
@@ -203,16 +198,6 @@ int main(int argc, char *argv[]) {
     }
 
     return;
-  };
-
-  auto overall_cost = [&]() {
-    int cost = 0;
-    for (const auto& row : occupancy) {
-      for (const int count : row) {
-        cost += count * count;
-      }
-    }
-    return cost;
   };
 
   /********************************************************
@@ -298,80 +283,75 @@ int main(int argc, char *argv[]) {
     }
   };
 
+  const double init_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - init_start).count();
+  std::cout << "Initialization time (sec): " << std::fixed << std::setprecision(10) << init_time << '\n';
+  auto compute_start = std::chrono::steady_clock::now();
+
   /**
    * Implement the wire routing algorithm here
    * Feel free to structure the algorithm into different functions
    * Don't use global variables.
    * Use OpenMP to parallelize the algorithm.
-   * TODO
    */
   if (parallel_mode == 'W') {
-
-    // First pass:
-    // 1) Add random route for each wire and draw it
-    for (auto& wire : wires) { // TODO: OpenMP this to fork based on wire
-      // Chose random bend axis and location
-      if (rand() % 2 == 1) { // horizontal first
-        wire.bend1_y = wire.start_y;
-        wire.bend1_x = wire.start_x + (rand() % (abs(wire.end_x - wire.start_x) + 1));
-
-        horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, 1);
-        vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
-        horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, 1);
-      }
-      else { // vertical first
-        wire.bend1_x = wire.start_x;
-        wire.bend1_y = wire.start_y + (rand() % (abs(wire.end_y - wire.start_y) + 1));
-
-        vertical_line(wire.start_y, wire.bend1_y, wire.start_x, 1);
-        horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, 1);
-        vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
-      }
-    }
-    // TODO: OpenMP Join
-
-
-    // 2) Second pass onwards:
+    compute_start = std::chrono::steady_clock::now();
     for (int iter = 0; iter < SA_iters; iter++) {
-
       // For each wire:
-      for (auto &wire : wires) {
+
+      auto iter_start = std::chrono::steady_clock::now();
+      for (int w = 0; w < num_wires; w++) {
+        auto wire = wires[w];
+
         int min_path_bend1_x = 0;
         int min_path_bend1_y = 0;
-        // a) Compute overall cost in current occupancy matrix
-        //    with and without wire
-        int cost_with = overall_cost();
-
-        // Remove the line:
-        if (wire.start_y == wire.bend1_y) { // horizontal first
-          horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, -1);
-          vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, -1);
-          horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, -1);
+        if (iter > 0) { // remove route
+          auto remove_start = std::chrono::steady_clock::now();
+          // Remove the line:
+          if (wire.start_y == wire.bend1_y) { // horizontal first
+            horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, -1);
+            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, -1);
+            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, -1);
+          }
+          else { // vertical first
+            vertical_line(wire.start_y, wire.bend1_y, wire.start_x, -1);
+            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, -1);
+            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, -1);
+          }
+          const double remove_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - remove_start).count();
+          std::cout << "Removing Wire " << w << " time (sec):     " << remove_time << '\n';
 
         }
-        else { // vertical first
-          vertical_line(wire.start_y, wire.bend1_y, wire.start_x, -1);
-          horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, -1);
-          vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, -1);
-        }
-        int cost_without = overall_cost();
-
         int min_cost = INT_MAX;
 
         // OpenMP "Fork" to schedule
-        // dx + dy threadto calculate minimum path
+        // dx + dy threads to calculate minimum path
         int dx = wire.end_x - wire.start_x;
         int dy = wire.end_y - wire.start_y;
 
-        omp_lock_t *cost_lock;
-        omp_init_lock(cost_lock);
-        #pragma omp parallel num_threads(abs(dx)+abs(dy))
+        if (dx == 0) {
+          vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
+          continue;
+        }
+
+        if (dy == 0) {
+          horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
+          continue;
+        }
+
+        /*assert(dx != 0 && dy != 0 && "Either dx or dy is 0?!");
+        assert(abs(dx) > 0 && "What? abs(dx) is <= 0?!");
+        assert(abs(dy) > 0 && "What? abs(dy) is <= 0?!");*/
+
+        auto wire_start = std::chrono::steady_clock::now();
+        //#pragma omp parallel num_threads(abs(dx)+abs(dy))
+        #pragma omp parallel num_threads(1)
         {
+          auto route_start = std::chrono::steady_clock::now();
           unsigned int thread_idx = omp_get_thread_num();
-          int my_cost = 0;
+          int my_cost = INT_MAX;
           int bend1_x = wire.start_x;
           int bend1_y = wire.start_y;
-          // b) Determine minimum horizontal-first path
+          // 2) Determine minimum horizontal-first path
           if (thread_idx < abs(dx)) { // Determine minimum horizontal-first path
             int shift = thread_idx + 1;
             int dir = dx >= 0 ? 1 : -1;
@@ -379,26 +359,35 @@ int main(int argc, char *argv[]) {
 
             my_cost = route_cost(wire, bend1_x, wire.start_y);
           }
-          else { // c) Determine minimum vertical-first path
-            int shift = thread_idx - abs(dx) + 1;
+          else if (thread_idx < abs(dx) + abs(dy)) { // 3) Determine minimum vertical-first path
+            int shift = thread_idx - abs(dx);
             int dir = dy >= 0 ? 1 : -1;
             bend1_y += shift * dir;
 
             my_cost = route_cost(wire, wire.start_x, bend1_y);
           }
 
-          omp_set_lock(cost_lock);
-          if (my_cost < min_cost) {
-              min_cost = my_cost;
-              wire.bend1_x = bend1_x;
-              wire.bend1_y = bend1_y;
+          // TODO: Bottleneck is with writing to wire, but this is also intrinsic to the algorithm...
+          //#pragma omp critical
+          {
+            if (my_cost < min_cost) {
+                min_cost = my_cost;
+                wire.bend1_x = bend1_x;
+                wire.bend1_y = bend1_y;
+            }
           }
-          omp_unset_lock(cost_lock);
+          const double route_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - route_start).count();
+          /*if (iter == 0)
+            printf("Route %i time (sec): %0.10f\n", thread_idx, route_time);*/
+          //omp_unset_lock(&cost_lock);
         }
+        const double wire_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - wire_start).count();
+        std::cout << "Wire " << w << " (" << abs(dx) + abs(dy) << " routes) " << "time (sec): " << wire_time << '\n';
         // OpenMP "Join"
 
-        // d) With probability (1-P) (or straight line is min), choose minimum path.
+        // 4) With probability (1-P) (or straight line is min), choose minimum path.
         //    Otherwise, choose path randomly.
+        auto add_start = std::chrono::steady_clock::now();
         if ((rand() / (float)(RAND_MAX)) <= 1 - SA_prob) {
           // Add to occupancy matrix
           if (wire.start_y == wire.bend1_y) { // horizontal first
@@ -413,10 +402,10 @@ int main(int argc, char *argv[]) {
           }
         }
         else {
-          // TODO: Random Path
+          // Random Path
           if (rand() % 2 == 1) { // horizontal first
             wire.bend1_y = wire.start_y;
-            wire.bend1_x = wire.start_x + (rand() % (abs(wire.end_x - wire.start_x) + 1));
+            wire.bend1_x = wire.start_x + ((rand() % (abs(wire.end_x - wire.start_x) + 1)) * (dx > 0 ? 1 : -1));
 
             horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, 1);
             vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
@@ -424,17 +413,22 @@ int main(int argc, char *argv[]) {
           }
           else { // vertical first
             wire.bend1_x = wire.start_x;
-            wire.bend1_y = wire.start_y + (rand() % (abs(wire.end_y - wire.start_y) + 1));
+            wire.bend1_y = wire.start_y + ((rand() % (abs(wire.end_y - wire.start_y) + 1)) * (dy > 0 ? 1 : -1));
 
             vertical_line(wire.start_y, wire.bend1_y, wire.start_x, 1);
             horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, 1);
             vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
           }
         }
+        const double add_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - add_start).count();
+        std::cout << "Adding wire " << w << " time (sec):       " << add_time << '\n';
       }
+      const double iter_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - iter_start).count();
+      std::cout << "Iteration " << iter << " time (sec): " << iter_time << '\n';
     }
   }
   else { assert(parallel_mode == 'A'); // parallel_mode == 'A'
+    compute_start = std::chrono::steady_clock::now();
     // TODO: What can be done independently betwen wires?
   }
 
