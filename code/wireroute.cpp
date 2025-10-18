@@ -200,10 +200,46 @@ int main(int argc, char *argv[]) {
     return;
   };
 
+  // To draw wires that have at least one bend
+  auto draw_wire = [&](Wire wire, int val) {
+    if (wire.start_y == wire.bend1_y) { // horizontal first
+      if (wire.start_y == wire.end_y) {
+          printf("Attempted to draw horizontal line... Please only use the draw_wire function for wires with at least one bend!");
+          abort();
+      }
+      horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, val);
+
+      int line_start = wire.bend1_y + (wire.end_y > wire.start_y ? 1 : -1);
+      vertical_line(line_start, wire.end_y, wire.bend1_x, val);
+
+      if (wire.bend1_x != wire.end_x) {
+        line_start = wire.bend1_x + (wire.end_x > wire.start_x ? 1 : -1);
+        horizontal_line(line_start, wire.end_x, wire.end_y, val);
+      }
+    }
+
+    else { assert(wire.start_x == wire.bend1_x); // vertical first
+      if (wire.start_x == wire.end_x) {
+          printf("Attempted to draw vertical line... Please only use the draw_wire function for wires with at least one bend!");
+          abort();
+      }
+      vertical_line(wire.start_y, wire.bend1_y, wire.start_x, val);
+
+      int line_start = wire.bend1_x + (wire.end_x > wire.start_x ? 1 : -1);
+      horizontal_line(line_start, wire.end_x, wire.bend1_y, val);
+
+      if (wire.bend1_y != wire.end_y) {
+        line_start = wire.bend1_y + (wire.end_y > wire.start_y ? 1 : -1);
+        vertical_line(line_start, wire.end_y, wire.end_x, val);
+      }
+    }
+  };
+
   /********************************************************
    * the cost of adding `wire` to the occupancy matrix
    * with a potential bend location
-   * (assumes the route is not already present)
+   * (assumes the route is not already present,
+   *  and has at least one bend)
    *
    * Travel from start->bend1->bend2->end,
    * calculating how much you *would* add to cost
@@ -216,7 +252,7 @@ int main(int argc, char *argv[]) {
 
     // first move is horizontal
     if (wire.start_y == bend1_y) {
-      if (wire.start_x <= bend1_x)
+      if (wire.start_x < wire.end_x)
         for (int i = wire.start_x; i <= bend1_x; i++) {
           cost += 2*(occupancy[wire.start_y][i]) + 1;
         }
@@ -226,7 +262,7 @@ int main(int argc, char *argv[]) {
         }
 
       // First bend
-      if (wire.bend1_y <= wire.end_y)
+      if (wire.start_y < wire.end_y)
         for (int i = bend1_y + 1; i <= wire.end_y; i++) {
           cost += 2*(occupancy[i][bend1_x]) + 1;
         }
@@ -235,8 +271,10 @@ int main(int argc, char *argv[]) {
           cost += 2*(occupancy[i][bend1_x]) + 1;
         }
 
+      if (bend1_x == wire.end_x) return cost;
+
       // Second bend
-      if (wire.bend1_x <= wire.end_x)
+      if (wire.start_x < wire.end_x)
         for (int i = bend1_x + 1; i <= wire.end_x; i++) {
           cost += 2*(occupancy[wire.end_y][i]) + 1;
         }
@@ -250,7 +288,7 @@ int main(int argc, char *argv[]) {
 
     // first move is vertical
     else {
-      if (wire.start_y <= bend1_y)
+      if (wire.start_y < wire.end_y)
         for (int i = wire.start_y; i <= bend1_y; i++) {
           cost += 2*(occupancy[i][wire.start_x]) + 1;
         }
@@ -260,7 +298,7 @@ int main(int argc, char *argv[]) {
         }
 
       // First bend
-      if (bend1_x <= wire.end_x)
+      if (wire.start_x < wire.end_x)
         for (int i = bend1_x + 1; i <= wire.end_x; i++) {
           cost += 2*(occupancy[bend1_y][i]) + 1;
         }
@@ -269,8 +307,10 @@ int main(int argc, char *argv[]) {
           cost += 2*(occupancy[bend1_y][i]) + 1;
         }
 
+      if (bend1_y == wire.end_y) return cost;
+
       // Second bend
-      if (wire.bend1_y <= wire.end_y)
+      if (wire.start_y < wire.end_y)
         for (int i = bend1_y + 1; i <= wire.end_y; i++) {
           cost += 2*(occupancy[i][wire.end_x]) + 1;
         }
@@ -302,23 +342,14 @@ int main(int argc, char *argv[]) {
       for (int w = 0; w < num_wires; w++) {
         auto wire = wires[w];
 
-        int min_path_bend1_x = 0;
-        int min_path_bend1_y = 0;
         if (iter > 0) { // remove route
-          auto remove_start = std::chrono::steady_clock::now();
-          // Remove the line:
-          if (wire.start_y == wire.bend1_y) { // horizontal first
-            horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, -1);
-            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, -1);
-            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, -1);
+          if (wire.start_x != wire.end_x && wire.start_y != wire.end_y) {
+            // Remove the line:
+            auto remove_start = std::chrono::steady_clock::now();
+            draw_wire(wire, -1);
+            const double remove_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - remove_start).count();
+            //std::cout << "Removing Wire " << w << " time (sec):     " << remove_time << '\n';
           }
-          else { // vertical first
-            vertical_line(wire.start_y, wire.bend1_y, wire.start_x, -1);
-            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, -1);
-            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, -1);
-          }
-          const double remove_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - remove_start).count();
-          std::cout << "Removing Wire " << w << " time (sec):     " << remove_time << '\n';
 
         }
 
@@ -328,18 +359,18 @@ int main(int argc, char *argv[]) {
         int dy = wire.end_y - wire.start_y;
 
         if (dx == 0) {
-          vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
+          if (iter == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
           continue;
         }
 
         if (dy == 0) {
-          horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
+          if (iter == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
           continue;
         }
 
-        /*assert(dx != 0 && dy != 0 && "Either dx or dy is 0?!");
+        assert(dx != 0 && dy != 0 && "Either dx or dy is 0?!");
         assert(abs(dx) > 0 && "What? abs(dx) is <= 0?!");
-        assert(abs(dy) > 0 && "What? abs(dy) is <= 0?!");*/
+        assert(abs(dy) > 0 && "What? abs(dy) is <= 0?!");
 
         unsigned int min_idx = 0;
         int min_cost = INT_MAX;
@@ -412,60 +443,31 @@ int main(int argc, char *argv[]) {
           wire.bend1_y = wire.start_y + (((min_idx - abs(dx)) + 1) * (dy >= 0 ? 1 : -1));
         }
         const double assign_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - assign_start).count();
-        std::cout << "Wire " << w << "/" << num_wires << " Assign time (sec):       " << assign_time << '\n';
+        //std::cout << "Wire " << w << "/" << num_wires << " Assign time (sec):       " << assign_time << '\n';
 
         const double wire_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - wire_start).count();
-        std::cout << "Wire " << w << "/" << num_wires << " (" << abs(dx) + abs(dy) << " routes) time (sec): " << wire_time << '\n';
+        //std::cout << "Wire " << w << "/" << num_wires << " (" << abs(dx) + abs(dy) << " routes) time (sec): " << wire_time << '\n';
         // OpenMP "Join"
 
         // 4) With probability (1-P) (or straight line is min), choose minimum path.
         //    Otherwise, choose path randomly.
         auto add_start = std::chrono::steady_clock::now();
-        if ((rand() / (float)(RAND_MAX)) <= 1 - SA_prob) {
-          // Add to occupancy matrix
-          if (wire.start_y == wire.bend1_y) { // horizontal first
-            printf("Attempting hori first (non-random)...\n");
-            horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, 1);
-            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
-            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, 1);
-            printf("Did a hori first (non-random)!\n");
-          }
-          else { // vertical first
-            printf("Attempting vert first (non-random)...\n");
-            vertical_line(wire.start_y, wire.bend1_y, wire.start_x, 1);
-            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, 1);
-            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
-            printf("Did a vert first (non-random)!\n");
-          }
-        }
-        else {
-          // Random Path
+        if ((rand() / (float)(RAND_MAX)) <= SA_prob) {// Random Path
           if (rand() % 2 == 1) { // horizontal first
-            printf("Attempting hori first (RANDOM)...\n");
             wire.bend1_y = wire.start_y;
             wire.bend1_x = wire.start_x + ((rand() % (abs(wire.end_x - wire.start_x) + 1)) * (dx > 0 ? 1 : -1));
-
-            horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, 1);
-            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
-            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, 1);
-            printf("Did a hori first (RANDOM)!\n");
           }
           else { // vertical first
-            printf("Attempting vert first (RANDOM)...\n");
             wire.bend1_x = wire.start_x;
             wire.bend1_y = wire.start_y + ((rand() % (abs(wire.end_y - wire.start_y) + 1)) * (dy > 0 ? 1 : -1));
-
-            vertical_line(wire.start_y, wire.bend1_y, wire.start_x, 1);
-            horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, 1);
-            vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
-            printf("Did a vert first (RANDOM)!\n");
           }
         }
+        draw_wire(wire, 1);
         const double add_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - add_start).count();
-        std::cout << "Adding wire " << w << "/" << num_wires << " time (sec):       " << add_time << '\n';
+        //std::cout << "Adding wire " << w << "/" << num_wires << " time (sec):       " << add_time << '\n';
       }
       const double iter_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - iter_start).count();
-      std::cout << "Iteration " << iter << " time (sec): " << iter_time << '\n';
+      //std::cout << "Iteration " << iter << " time (sec): " << iter_time << '\n';
     }
   }
   else { assert(parallel_mode == 'A'); // parallel_mode == 'A'
