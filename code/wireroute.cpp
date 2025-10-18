@@ -185,7 +185,7 @@ int main(int argc, char *argv[]) {
 
   // INCLUSIVE
   auto vertical_line = [&](int y1, int y2, int x, int val) {
-    if (y1 < 0 || y2 >= dim_y || y2 < 0 || y2 >= dim_x || x < 0 || x >= dim_x) {
+    if (y1 < 0 || y2 >= dim_y || y2 < 0 || y2 >= dim_y || x < 0 || x >= dim_x) {
         printf("Tried to draw vertical line out of bounds! (%i, %i->%i) in (%i, %i)\n", x, y1, y2, dim_x, dim_y);
         abort();
     }
@@ -321,7 +321,6 @@ int main(int argc, char *argv[]) {
           std::cout << "Removing Wire " << w << " time (sec):     " << remove_time << '\n';
 
         }
-        int min_cost = INT_MAX;
 
         // OpenMP "Fork" to schedule
         // dx + dy threads to calculate minimum path
@@ -342,47 +341,81 @@ int main(int argc, char *argv[]) {
         assert(abs(dx) > 0 && "What? abs(dx) is <= 0?!");
         assert(abs(dy) > 0 && "What? abs(dy) is <= 0?!");*/
 
+        unsigned int min_idx = 0;
+        int min_cost = INT_MAX;
+
+        int num_routes = abs(dx) + abs(dy);
         auto wire_start = std::chrono::steady_clock::now();
         //#pragma omp parallel num_threads(abs(dx)+abs(dy))
-        #pragma omp parallel num_threads(1)
+        #pragma omp parallel num_threads(num_threads)
         {
-          auto route_start = std::chrono::steady_clock::now();
+          //auto route_start = std::chrono::steady_clock::now();
+
           unsigned int thread_idx = omp_get_thread_num();
-          int my_cost = INT_MAX;
-          int bend1_x = wire.start_x;
-          int bend1_y = wire.start_y;
-          // 2) Determine minimum horizontal-first path
-          if (thread_idx < abs(dx)) { // Determine minimum horizontal-first path
-            int shift = thread_idx + 1;
-            int dir = dx >= 0 ? 1 : -1;
-            bend1_x += shift * dir;
+          unsigned int my_min_idx = thread_idx;
+          int my_min_cost = INT_MAX;
 
-            my_cost = route_cost(wire, bend1_x, wire.start_y);
-          }
-          else if (thread_idx < abs(dx) + abs(dy)) { // 3) Determine minimum vertical-first path
-            int shift = thread_idx - abs(dx);
-            int dir = dy >= 0 ? 1 : -1;
-            bend1_y += shift * dir;
+          //
+          for (unsigned int route_idx = thread_idx; route_idx < num_routes; route_idx += num_threads) {
+            int my_route_cost = INT_MAX;
+            int bend1_x = wire.start_x;
+            int bend1_y = wire.start_y;
 
-            my_cost = route_cost(wire, wire.start_x, bend1_y);
-          }
+            // 2) Determine minimum horizontal-first path
+            if (route_idx < abs(dx)) { // Determine minimum horizontal-first path
+              int shift = route_idx + 1;
+              int dir = dx >= 0 ? 1 : -1;
+              bend1_x += shift * dir;
 
-          // TODO: Bottleneck is with writing to wire, but this is also intrinsic to the algorithm...
-          //#pragma omp critical
-          {
-            if (my_cost < min_cost) {
-                min_cost = my_cost;
-                wire.bend1_x = bend1_x;
-                wire.bend1_y = bend1_y;
+              my_route_cost = route_cost(wire, bend1_x, wire.start_y);
+            }
+            else if (route_idx < num_routes) { // 3) Determine minimum vertical-first path
+              int shift = route_idx - abs(dx);
+              int dir = dy >= 0 ? 1 : -1;
+              bend1_y += shift * dir;
+
+              my_route_cost = route_cost(wire, wire.start_x, bend1_y);
+            }
+
+            if (my_route_cost < my_min_cost) {
+              my_min_cost = my_route_cost;
+              my_min_idx = route_idx;
+              //wire.bend1_x = bend1_x;
+              //wire.bend1_y = bend1_y;
             }
           }
+
+          #pragma omp barrier
+
+          #pragma omp critical
+          {
+            if (my_min_cost < min_cost) {
+              min_cost = my_min_cost;
+              min_idx = my_min_idx;
+              //wire.bend1_x = bend1_x;
+              //wire.bend1_y = bend1_y;
+            }
+          }
+          /*
           const double route_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - route_start).count();
-          /*if (iter == 0)
+          if (w == 165 && iter == 0)
             printf("Route %i time (sec): %0.10f\n", thread_idx, route_time);*/
-          //omp_unset_lock(&cost_lock);
         }
+
+        auto assign_start = std::chrono::steady_clock::now();
+        if (min_idx < abs(dx)) {
+          wire.bend1_x = wire.start_x + ((min_idx + 1) * (dx >= 0 ? 1 : -1));
+          wire.bend1_y = wire.start_y;
+        }
+        else {
+          wire.bend1_x = wire.start_x;
+          wire.bend1_y = wire.start_y + (((min_idx - abs(dx)) + 1) * (dy >= 0 ? 1 : -1));
+        }
+        const double assign_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - assign_start).count();
+        std::cout << "Wire " << w << "/" << num_wires << " Assign time (sec):       " << assign_time << '\n';
+
         const double wire_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - wire_start).count();
-        std::cout << "Wire " << w << " (" << abs(dx) + abs(dy) << " routes) " << "time (sec): " << wire_time << '\n';
+        std::cout << "Wire " << w << "/" << num_wires << " (" << abs(dx) + abs(dy) << " routes) time (sec): " << wire_time << '\n';
         // OpenMP "Join"
 
         // 4) With probability (1-P) (or straight line is min), choose minimum path.
@@ -391,37 +424,45 @@ int main(int argc, char *argv[]) {
         if ((rand() / (float)(RAND_MAX)) <= 1 - SA_prob) {
           // Add to occupancy matrix
           if (wire.start_y == wire.bend1_y) { // horizontal first
+            printf("Attempting hori first (non-random)...\n");
             horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, 1);
             vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
             horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, 1);
+            printf("Did a hori first (non-random)!\n");
           }
           else { // vertical first
+            printf("Attempting vert first (non-random)...\n");
             vertical_line(wire.start_y, wire.bend1_y, wire.start_x, 1);
             horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, 1);
             vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
+            printf("Did a vert first (non-random)!\n");
           }
         }
         else {
           // Random Path
           if (rand() % 2 == 1) { // horizontal first
+            printf("Attempting hori first (RANDOM)...\n");
             wire.bend1_y = wire.start_y;
             wire.bend1_x = wire.start_x + ((rand() % (abs(wire.end_x - wire.start_x) + 1)) * (dx > 0 ? 1 : -1));
 
             horizontal_line(wire.start_x, wire.bend1_x, wire.start_y, 1);
             vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
             horizontal_line(wire.bend1_x + 1, wire.end_x, wire.end_y, 1);
+            printf("Did a hori first (RANDOM)!\n");
           }
           else { // vertical first
+            printf("Attempting vert first (RANDOM)...\n");
             wire.bend1_x = wire.start_x;
             wire.bend1_y = wire.start_y + ((rand() % (abs(wire.end_y - wire.start_y) + 1)) * (dy > 0 ? 1 : -1));
 
             vertical_line(wire.start_y, wire.bend1_y, wire.start_x, 1);
             horizontal_line(wire.bend1_x + 1, wire.end_x, wire.bend1_y, 1);
             vertical_line(wire.bend1_y + 1, wire.end_y, wire.bend1_x, 1);
+            printf("Did a vert first (RANDOM)!\n");
           }
         }
         const double add_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - add_start).count();
-        std::cout << "Adding wire " << w << " time (sec):       " << add_time << '\n';
+        std::cout << "Adding wire " << w << "/" << num_wires << " time (sec):       " << add_time << '\n';
       }
       const double iter_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - iter_start).count();
       std::cout << "Iteration " << iter << " time (sec): " << iter_time << '\n';
