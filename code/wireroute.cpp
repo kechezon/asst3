@@ -401,7 +401,7 @@ int main(int argc, char *argv[]) {
               my_route_cost = route_cost(wire, bend1_x, wire.start_y);
             }
             else if (route_idx < num_routes) { // 3) Determine minimum vertical-first path
-              int shift = route_idx - abs(dx);
+              int shift = route_idx - abs(dx) + 1;
               int dir = dy >= 0 ? 1 : -1;
               bend1_y += shift * dir;
 
