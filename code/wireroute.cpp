@@ -247,7 +247,7 @@ int main(int argc, char *argv[]) {
    * (if o.m. position has value v, then you would add
    * ((v+1)^2 - v^2 = 2v+1)
    ********************************************************/
-  auto route_cost = [&](Wire wire, int bend1_x, int bend1_y) {
+  auto route_cost_help = [&](Wire wire, int bend1_x, int bend1_y) {
     int cost = 0;
 
     // first move is horizontal
@@ -323,6 +323,30 @@ int main(int argc, char *argv[]) {
     }
   };
 
+  auto route_cost_iteration = [&](Wire wire, int route_idx, int dx, int dy, int num_routes) {
+    int bend1_x = wire.start_x;
+    int bend1_y = wire.start_y;
+
+    // Determine minimum horizontal-first path
+    if (route_idx < abs(dx)) { // Determine minimum horizontal-first path
+      int shift = route_idx + 1;
+      int dir = dx >= 0 ? 1 : -1;
+      bend1_x += shift * dir;
+
+      return route_cost_help(wire, bend1_x, wire.start_y);
+    }
+    else if (route_idx < num_routes) { // 3) Determine minimum vertical-first path
+      int shift = route_idx - abs(dx) + 1;
+      int dir = dy >= 0 ? 1 : -1;
+      bend1_y += shift * dir;
+
+      return route_cost_help(wire, wire.start_x, bend1_y);
+    }
+
+    printf("Attempting to find cost of invalid route %i on wire with %i routes\n", route_idx, num_routes);
+    abort();
+  };
+
   const double init_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - init_start).count();
   std::cout << "Initialization time (sec): " << std::fixed << std::setprecision(10) << init_time << '\n';
   auto compute_start = std::chrono::steady_clock::now();
@@ -388,31 +412,13 @@ int main(int argc, char *argv[]) {
 
           //
           for (unsigned int route_idx = thread_idx; route_idx < num_routes; route_idx += num_threads) {
+            // 2) and 3) Determine all paths that travel horizontal and vertical
             int my_route_cost = INT_MAX;
-            int bend1_x = wire.start_x;
-            int bend1_y = wire.start_y;
-
-            // 2) Determine minimum horizontal-first path
-            if (route_idx < abs(dx)) { // Determine minimum horizontal-first path
-              int shift = route_idx + 1;
-              int dir = dx >= 0 ? 1 : -1;
-              bend1_x += shift * dir;
-
-              my_route_cost = route_cost(wire, bend1_x, wire.start_y);
-            }
-            else if (route_idx < num_routes) { // 3) Determine minimum vertical-first path
-              int shift = route_idx - abs(dx) + 1;
-              int dir = dy >= 0 ? 1 : -1;
-              bend1_y += shift * dir;
-
-              my_route_cost = route_cost(wire, wire.start_x, bend1_y);
-            }
+            my_route_cost = route_cost_iteration(wire, route_idx, dx, dy, num_routes);
 
             if (my_route_cost < my_min_cost) {
               my_min_cost = my_route_cost;
               my_min_idx = route_idx;
-              //wire.bend1_x = bend1_x;
-              //wire.bend1_y = bend1_y;
             }
           }
 
@@ -423,14 +429,10 @@ int main(int argc, char *argv[]) {
             if (my_min_cost < min_cost) {
               min_cost = my_min_cost;
               min_idx = my_min_idx;
-              //wire.bend1_x = bend1_x;
-              //wire.bend1_y = bend1_y;
             }
           }
           /*
-          const double route_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - route_start).count();
-          if (w == 165 && iter == 0)
-            printf("Route %i time (sec): %0.10f\n", thread_idx, route_time);*/
+          const double route_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - route_start).count();*/
         }
 
         auto assign_start = std::chrono::steady_clock::now();
@@ -472,7 +474,108 @@ int main(int argc, char *argv[]) {
   }
   else { assert(parallel_mode == 'A'); // parallel_mode == 'A'
     compute_start = std::chrono::steady_clock::now();
-    // TODO: What can be done independently betwen wires?
+    for (int iter = 0; iter < SA_iters; iter++) {
+      // Determine the batches: grab the wires in blocks and just assign them sequentially
+      int B = 0; // wires already handled
+      while (B < num_wires) {
+        int best_route_idces[batch_size];
+        int my_min_costs[batch_size];
+
+        #pragma omp parallel for schedule(static) num_threads(num_threads)
+        for (int i = 0; i < batch_size; i++) { // Grab a batch and prepare the matrix
+          my_min_costs[i] = INT_MAX;
+          best_route_idces[i] = -1;
+          if (i + B >= num_wires) continue;
+
+          Wire wire;
+          int dx, dy, num_routes;
+          wire = wires[i + B];
+          dx = wire.end_x - wire.start_x;
+          dy = wire.end_y - wire.start_y;
+          num_routes = abs(dx) + abs(dy);
+
+          if (iter > 0) {
+            if (dx != 0 && dy != 0) draw_wire(wire, -1);
+            else if (dx == 0) vertical_line(wire.start_y, wire.end_y, wire.start_x, -1);
+            else if (dy == 0) horizontal_line(wire.start_x, wire.end_x, wire.start_y, -1);
+          }
+        }
+
+        #pragma omp parallel for schedule(semi-static) num_threads(num_threads)
+        for (int i = 0; i < batch_size; i++) { // find the best route
+          if (i + B >= num_wires) continue;
+
+          auto wire = wires[i + B];
+          int dx = wire.end_x - wire.start_x;
+          int dy = wire.end_y - wire.start_y;
+          int num_routes = abs(dx) + abs(dy);
+          if (dx == 0) { // best route is horizontal
+            best_route_idces[i] = num_routes;
+            continue;
+          }
+
+          if (dy == 0) { // best route is vertical
+            best_route_idces[i] = num_routes + 1;
+            continue;
+          }
+
+          for (int route_idx = 0; route_idx < num_routes; route_idx++) {
+            // determine new route for wire using another loop
+            int my_route_cost = route_cost_iteration(wire, route_idx, dx, dy, num_routes);
+
+            if (my_route_cost < my_min_costs[i]) {
+              best_route_idces[i] = route_idx; // remember it!
+              my_min_costs[i] = my_route_cost;
+            }
+          }
+        }
+
+        #pragma omp parallel for schedule(static) num_threads(num_threads)
+        for (int i = 0; i < batch_size; i++) {
+          // update occupancy matrix
+          // reader-writer locks are unnecessary
+          if (i + B >= num_wires) continue;
+
+          auto wire = wires[i + B];
+          int dx = wire.end_x - wire.start_x;
+          int dy = wire.end_y - wire.start_y;
+          int num_routes = abs(dx) + abs(dy);
+
+          if (best_route_idces[i] == num_routes) { // horizontal
+            horizontal_line(wire.start_x, wire.end_x, wire.start_y, 1);
+            continue;
+          }
+
+          if (best_route_idces[i] == num_routes + 1) { // vertical
+            vertical_line(wire.start_y, wire.end_y, wire.start_x, 1);
+            continue;
+          }
+
+          if (best_route_idces[i] < abs(dx)) {
+            wire.bend1_x = wire.start_x + ((best_route_idces[i] + 1) * (dx >= 0 ? 1 : -1));
+            wire.bend1_y = wire.start_y;
+          }
+          else if (best_route_idces[i] < num_routes) {
+            wire.bend1_x = wire.start_x;
+            wire.bend1_y = wire.start_y + ((best_route_idces[i] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
+          }
+
+          if ((rand() / (float)(RAND_MAX)) <= SA_prob) { // Random Path
+            if (rand() % 2 == 1) { // horizontal first
+              wire.bend1_y = wire.start_y;
+              wire.bend1_x = wire.start_x + ((rand() % (abs(wire.end_x - wire.start_x) + 1)) * (dx > 0 ? 1 : -1));
+            }
+            else { // vertical first
+              wire.bend1_x = wire.start_x;
+              wire.bend1_y = wire.start_y + ((rand() % (abs(wire.end_y - wire.start_y) + 1)) * (dy > 0 ? 1 : -1));
+            }
+          }
+          draw_wire(wire, 1);
+        }
+
+        B += batch_size;
+      }
+    }
   }
 
   const double compute_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - compute_start).count();
