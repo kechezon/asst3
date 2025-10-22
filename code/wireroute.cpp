@@ -401,7 +401,6 @@ int main(int argc, char *argv[]) {
 
         int num_routes = abs(dx) + abs(dy);
         auto wire_start = std::chrono::steady_clock::now();
-        //#pragma omp parallel num_threads(abs(dx)+abs(dy))
         #pragma omp parallel num_threads(num_threads)
         {
           //auto route_start = std::chrono::steady_clock::now();
@@ -481,7 +480,7 @@ int main(int argc, char *argv[]) {
         int best_route_idces[batch_size];
         int my_min_costs[batch_size];
 
-        #pragma omp parallel for schedule(static) num_threads(num_threads)
+        #pragma omp parallel for schedule(dynamic) num_threads(num_threads)
         for (int i = 0; i < batch_size; i++) { // Grab a batch and prepare the matrix
           my_min_costs[i] = INT_MAX;
           best_route_idces[i] = -1;
@@ -501,7 +500,7 @@ int main(int argc, char *argv[]) {
           }
         }
 
-        #pragma omp parallel for schedule(semi-static) num_threads(num_threads)
+        #pragma omp parallel for schedule(dynamic) num_threads(num_threads)
         for (int i = 0; i < batch_size; i++) { // find the best route
           if (i + B >= num_wires) continue;
 
@@ -530,7 +529,7 @@ int main(int argc, char *argv[]) {
           }
         }
 
-        #pragma omp parallel for schedule(static) num_threads(num_threads)
+        #pragma omp parallel for schedule(dynamic) num_threads(num_threads)
         for (int i = 0; i < batch_size; i++) {
           // update occupancy matrix
           // reader-writer locks are unnecessary
@@ -551,14 +550,6 @@ int main(int argc, char *argv[]) {
             continue;
           }
 
-          if (best_route_idces[i] < abs(dx)) {
-            wire.bend1_x = wire.start_x + ((best_route_idces[i] + 1) * (dx >= 0 ? 1 : -1));
-            wire.bend1_y = wire.start_y;
-          }
-          else if (best_route_idces[i] < num_routes) {
-            wire.bend1_x = wire.start_x;
-            wire.bend1_y = wire.start_y + ((best_route_idces[i] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
-          }
 
           if ((rand() / (float)(RAND_MAX)) <= SA_prob) { // Random Path
             if (rand() % 2 == 1) { // horizontal first
@@ -570,7 +561,21 @@ int main(int argc, char *argv[]) {
               wire.bend1_y = wire.start_y + ((rand() % (abs(wire.end_y - wire.start_y) + 1)) * (dy > 0 ? 1 : -1));
             }
           }
-          draw_wire(wire, 1);
+          else {
+            if (best_route_idces[i] < abs(dx)) {
+              wire.bend1_x = wire.start_x + ((best_route_idces[i] + 1) * (dx >= 0 ? 1 : -1));
+              wire.bend1_y = wire.start_y;
+            }
+            else if (best_route_idces[i] < num_routes) {
+              wire.bend1_x = wire.start_x;
+              wire.bend1_y = wire.start_y + ((best_route_idces[i] - abs(dx) + 1) * (dy >= 0 ? 1 : -1));
+            }
+          }
+
+          #pragma omp critical
+          {
+            draw_wire(wire, 1);
+          }
         }
 
         B += batch_size;
@@ -580,6 +585,7 @@ int main(int argc, char *argv[]) {
 
   const double compute_time = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - compute_start).count();
   std::cout << "Computation time (sec): " << compute_time << '\n';
+  std::cout << "Total time (sec): " << init_time + compute_time << '\n';
 
   /* Write wires and occupancy matrix to files */
 
